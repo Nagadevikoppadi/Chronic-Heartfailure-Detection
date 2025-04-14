@@ -1,0 +1,161 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.naive_bayes import GaussianNB
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, roc_curve, auc, classification_report
+from imblearn.over_sampling import SMOTE
+import xgboost as xgb
+import warnings
+
+warnings.filterwarnings("ignore")
+
+# Load Data
+@st.cache_data
+def load_data():
+    df = pd.read_csv("data1.csv")  # Adjust path as needed
+    return df
+
+df = load_data()
+
+st.title("Heart Failure Analysis and Prediction")
+
+# Sidebar for navigation
+page = st.sidebar.selectbox("Choose a page", ["Data Explorer", "Statistical Analysis", "Model Prediction"])
+
+if page == "Data Explorer":
+    st.header("Data Exploration")
+
+    with st.expander("View Dataset"):
+        st.write(df)
+        st.write("Dataset Shape:", df.shape)
+
+    st.subheader("Feature Distributions")
+    feature = st.selectbox("Select Feature for Distribution", df.columns)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    if df[feature].dtype in ['int64', 'float64']:
+        sns.histplot(data=df, x=feature, hue='cardiac arrest', multiple="stack")
+    else:
+        sns.countplot(data=df, x=feature, hue='cardiac arrest')
+
+    plt.xticks(rotation=45)
+    st.pyplot(fig)
+
+elif page == "Statistical Analysis":
+    st.header("Statistical Analysis")
+    
+    # Correlation Matrix
+    st.subheader("Correlation Matrix")
+    corr = df.corr()
+    fig, ax = plt.subplots(figsize=(12, 8))
+    sns.heatmap(corr, annot=True, cmap='coolwarm', fmt='.2f')
+    st.pyplot(fig)
+
+    st.subheader("Feature Relationships")
+    x_axis = st.selectbox("Select X-axis feature", df.select_dtypes(include=['int64', 'float64']).columns)
+    y_axis = st.selectbox("Select Y-axis feature", df.select_dtypes(include=['int64', 'float64']).columns)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.scatterplot(data=df, x=x_axis, y=y_axis, hue='cardiac arrest')
+    st.pyplot(fig)
+
+else:  # Model Prediction
+    st.header("Heart Failure Prediction Model")
+
+    # Prepare Data
+    X = df.drop(['cardiac arrest', 'time'], axis=1)
+    y = df['cardiac arrest']
+
+    # Handling Class Imbalance
+    smote = SMOTE(random_state=42)
+    X, y = smote.fit_resample(X, y)
+
+    # Split and scale data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Model Selection
+    model_choice = st.selectbox(
+        "Select Model",
+        [ "Random Forest", "SVM", "Naive Bayes", "XGBoost"]
+    )
+
+    @st.cache_resource
+    def train_model(model_name, X_train, y_train):
+        if model_name == "Random Forest":
+            model = RandomForestClassifier(n_estimators=200, max_depth=10, min_samples_split=5, random_state=42)
+        elif model_name == "SVM":
+            model = SVC(kernel="rbf", C=10, gamma=0.1, probability=True)
+        elif model_name == "XGBoost":
+            model = xgb.XGBClassifier(n_estimators=200, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8)
+        else:
+            model = GaussianNB()
+        
+        model.fit(X_train, y_train)
+        return model
+
+    model = train_model(model_choice, X_train_scaled, y_train)
+
+    # Input form for prediction
+    st.subheader("Patient Information")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        age = st.number_input("Age", min_value=20, max_value=100, value=60)
+        ejection_fraction = st.number_input("Ejection Fraction (%)", min_value=0, max_value=100, value=38)
+        serum_creatinine = st.number_input("Serum Creatinine", min_value=0.0, max_value=10.0, value=1.1)
+        serum_sodium = st.number_input("Serum Sodium", min_value=100, max_value=150, value=136)
+
+    with col2:
+        creatinine_phosphokinase = st.number_input("Creatinine Phosphokinase", min_value=0, max_value=8000, value=500)
+        platelets = st.number_input("Platelets", min_value=0, max_value=850000, value=263358)
+        anaemia = st.radio("Anaemia", [0, 1])
+        diabetes = st.radio("Diabetes", [0, 1])
+
+    high_blood_pressure = st.radio("High Blood Pressure", [0, 1])
+    sex = st.radio("Sex (1 for Male, 0 for Female)", [0, 1])
+    smoking = st.radio("Smoking", [0, 1])
+
+    if st.button("Predict"):
+        input_data = np.array([[age, anaemia, creatinine_phosphokinase, diabetes,
+                               ejection_fraction, high_blood_pressure, platelets,
+                               serum_creatinine, serum_sodium, sex, smoking]])
+
+        input_scaled = scaler.transform(input_data)
+        prediction = model.predict(input_scaled)
+        prediction_proba = model.predict_proba(input_scaled)
+
+        st.subheader("Prediction Results")
+        result = "High Risk of Heart Failure" if prediction[0] == 1 else "Low Risk of Heart Failure"
+        probability = prediction_proba[0][1] if prediction[0] == 1 else prediction_proba[0][0]
+
+        st.write(f"Prediction: {result}")
+        st.write(f"Confidence: {probability:.2%}")
+
+        # Model Performance
+        st.subheader("Model Performance")
+        y_pred = model.predict(X_test_scaled)
+        accuracy = accuracy_score(y_test, y_pred)
+        st.write(f"Model Accuracy: {accuracy:.2%}")
+
+        # ROC Curve
+        fpr, tpr, _ = roc_curve(y_test, model.predict_proba(X_test_scaled)[:, 1])
+        roc_auc = auc(fpr, tpr)
+
+        fig, ax = plt.subplots()
+        ax.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.legend(loc="lower right")
+        st.pyplot(fig)
